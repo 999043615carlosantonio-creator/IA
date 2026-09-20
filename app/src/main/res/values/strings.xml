@@ -1,0 +1,34 @@
+<resources>
+    <string name="app_name">PromptCraft AI</string>
+    <string name="title_character_ai">Assistente de Personagens</string>
+    <string name="subtitle_character_ai">Análise visual e gerador de prompts</string>
+    <string name="listening_status">Ouvindo sua voz...</string>
+    <string name="press_to_speak">Toque no microfone para falar</string>
+    <string name="speaking_status">Assistente falando...</string>
+    <string name="input_placeholder">Digite ou envie uma foto de personagem...</string>
+    <string name="send">Enviar</string>
+    <string name="attach_image">Anexar Imagem</string>
+    <string name="copy_prompt">Copiar Prompt</string>
+    <string name="copy_response">Copiar</string>
+    <string name="response_copied">Copiado para a área de transferência!</string>
+    <string name="prompt_copied">Prompt copiado para a área de transferência!</string>
+    <string name="character_inventory_title">Inventário Visual do Personagem</string>
+    <string name="physical_traits">Traços Físicos</string>
+    <string name="clothing_traits">Vestimentas</string>
+    <string name="accessories_traits">Acessórios</string>
+    <string name="clear_chat">Limpar conversa</string>
+    <string name="view_inventory">Ver Memória</string>
+    <string name="settings_title">Configurações e Memória</string>
+    <string name="access_memory">Acessar Memória</string>
+    <string name="memory_saved_success">Informação específica guardada na memória permanente com sucesso!</string>
+    <string name="optimize_prompt_gemini">Otimizar Prompt com Gemini</string>
+    <string name="optimizing_prompt">Otimizando prompt com Gemini...</string>
+    <string name="optimized_prompt_success">Prompt otimizado pelo Gemini gerado com sucesso!</string>
+    <string name="profile_title">Perfis de História</string>
+    <string name="switch_profile">Trocar Perfil</string>
+    <string name="new_profile">Criar Novo Perfil</string>
+    <string name="enter_profile_name">Nome do novo perfil</string>
+    <string name="profile_options">Opções de Perfil</string>
+    <string name="profile_active">Ativo</string>
+    <string name="delete_profile">Excluir Perfil</string>
+</resources>

@@ -1,0 +1,6 @@
+{
+  "name": "PromptCraft AI",
+  "description": "Assistente Android de conversação por voz e texto para catalogar inventário visual de personagens e gerar prompts fiéis para IAs de imagem gratuitas.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
