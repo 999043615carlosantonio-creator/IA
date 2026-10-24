@@ -4,7 +4,9 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.example.model.CharacterInventory
 import com.example.model.ChatMessage
+import com.example.model.GameSave
 import com.example.model.MemoryEntry
+import com.example.model.SaveType
 import com.example.model.UserProfile
 import org.json.JSONArray
 import org.json.JSONObject
@@ -386,5 +388,218 @@ class CharacterMemoryRepository(context: Context) {
         notes = "Líder da família do porto de Ferusaval. Descendente dos humanos que acolheram Teravarn ferido séculos atrás. Prepara o navio para a fuga."
       )
     )
+  }
+
+  // ===================== SISTEMA DE SAVE GAME (TEXT ADVENTURE) =====================
+  fun saveGame(gameSave: GameSave) {
+    val currentSaves = getSavesForProfile(gameSave.profileId).toMutableList()
+    currentSaves.removeAll { it.id == gameSave.id }
+    currentSaves.add(0, gameSave)
+
+    val trimmedSaves = if (currentSaves.size > 25) {
+      val manuals = currentSaves.filter { it.saveType == SaveType.MANUAL }
+      val autoKey = currentSaves.filter { it.saveType == SaveType.AUTO_KEY_MOMENT }
+      val autoInterval = currentSaves.filter { it.saveType == SaveType.AUTO_INTERVAL }
+      (manuals.take(10) + autoKey.take(10) + autoInterval.take(5))
+        .distinctBy { it.id }
+        .sortedByDescending { it.timestamp }
+    } else {
+      currentSaves
+    }
+
+    persistSavesForProfile(gameSave.profileId, trimmedSaves)
+    prefs.edit()
+      .putLong("last_save_time_${gameSave.profileId}", gameSave.timestamp)
+      .putString("last_save_id_${gameSave.profileId}", gameSave.id)
+      .apply()
+  }
+
+  fun getSavesForProfile(profileId: String): List<GameSave> {
+    val rawJson = prefs.getString("saves_profile_$profileId", null) ?: return emptyList()
+    return try {
+      val jsonArray = JSONArray(rawJson)
+      val list = mutableListOf<GameSave>()
+      for (i in 0 until jsonArray.length()) {
+        val obj = jsonArray.getJSONObject(i)
+        val saveType = try {
+          SaveType.valueOf(obj.optString("saveType", SaveType.AUTO_KEY_MOMENT.name))
+        } catch (e: Exception) {
+          SaveType.AUTO_KEY_MOMENT
+        }
+
+        list.add(
+          GameSave(
+            id = obj.optString("id", java.util.UUID.randomUUID().toString()),
+            profileId = obj.optString("profileId", profileId),
+            title = obj.optString("title", "Ponto Salvo"),
+            timestamp = obj.optLong("timestamp", System.currentTimeMillis()),
+            saveType = saveType,
+            triggerReason = obj.optString("triggerReason", "Salvamento Automático"),
+            turnCount = obj.optInt("turnCount", 0),
+            lastActionSnippet = obj.optString("lastActionSnippet", ""),
+            storyTitle = obj.optString("storyTitle", "A Ordem dos Sem Olhos"),
+            messagesSnapshot = deserializeChatMessages(obj.optJSONArray("messagesSnapshot")),
+            memoriesSnapshot = deserializeMemories(obj.optJSONArray("memoriesSnapshot")),
+            charactersSnapshot = deserializeCharacters(obj.optJSONArray("charactersSnapshot"))
+          )
+        )
+      }
+      list.sortedByDescending { it.timestamp }
+    } catch (e: Exception) {
+      emptyList()
+    }
+  }
+
+  fun getLatestSaveForProfile(profileId: String): GameSave? {
+    return getSavesForProfile(profileId).firstOrNull()
+  }
+
+  fun deleteGameSave(profileId: String, saveId: String): Boolean {
+    val saves = getSavesForProfile(profileId).toMutableList()
+    val removed = saves.removeAll { it.id == saveId }
+    if (removed) {
+      persistSavesForProfile(profileId, saves)
+    }
+    return removed
+  }
+
+  fun clearAllSavesForProfile(profileId: String) {
+    prefs.edit().remove("saves_profile_$profileId").apply()
+  }
+
+  private fun persistSavesForProfile(profileId: String, saves: List<GameSave>) {
+    val jsonArray = JSONArray()
+    saves.forEach { save ->
+      val obj = JSONObject().apply {
+        put("id", save.id)
+        put("profileId", save.profileId)
+        put("title", save.title)
+        put("timestamp", save.timestamp)
+        put("saveType", save.saveType.name)
+        put("triggerReason", save.triggerReason)
+        put("turnCount", save.turnCount)
+        put("lastActionSnippet", save.lastActionSnippet)
+        put("storyTitle", save.storyTitle)
+        put("messagesSnapshot", serializeChatMessages(save.messagesSnapshot))
+        put("memoriesSnapshot", serializeMemories(save.memoriesSnapshot))
+        put("charactersSnapshot", serializeCharacters(save.charactersSnapshot))
+      }
+      jsonArray.put(obj)
+    }
+    prefs.edit().putString("saves_profile_$profileId", jsonArray.toString()).apply()
+  }
+
+  private fun serializeChatMessages(messages: List<ChatMessage>): JSONArray {
+    val array = JSONArray()
+    messages.forEach { m ->
+      val obj = JSONObject().apply {
+        put("id", m.id)
+        put("text", m.text)
+        put("isUser", m.isUser)
+        put("imageUri", m.imageUri ?: "")
+        put("generatedPrompt", m.generatedPrompt ?: "")
+        put("suggestAccessMemoryButton", m.suggestAccessMemoryButton)
+        put("timestamp", m.timestamp)
+      }
+      array.put(obj)
+    }
+    return array
+  }
+
+  private fun deserializeChatMessages(array: JSONArray?): List<ChatMessage> {
+    if (array == null) return emptyList()
+    val list = mutableListOf<ChatMessage>()
+    for (i in 0 until array.length()) {
+      val obj = array.getJSONObject(i)
+      list.add(
+        ChatMessage(
+          id = obj.optString("id", java.util.UUID.randomUUID().toString()),
+          text = obj.optString("text"),
+          isUser = obj.optBoolean("isUser"),
+          imageUri = obj.optString("imageUri").takeIf { it.isNotBlank() },
+          generatedPrompt = obj.optString("generatedPrompt").takeIf { it.isNotBlank() },
+          suggestAccessMemoryButton = obj.optBoolean("suggestAccessMemoryButton", false),
+          timestamp = obj.optLong("timestamp", System.currentTimeMillis())
+        )
+      )
+    }
+    return list
+  }
+
+  private fun serializeMemories(memories: List<MemoryEntry>): JSONArray {
+    val array = JSONArray()
+    memories.forEach { entry ->
+      val obj = JSONObject().apply {
+        put("id", entry.id)
+        put("content", entry.content)
+        put("timestamp", entry.timestamp)
+      }
+      array.put(obj)
+    }
+    return array
+  }
+
+  private fun deserializeMemories(array: JSONArray?): List<MemoryEntry> {
+    if (array == null) return emptyList()
+    val list = mutableListOf<MemoryEntry>()
+    for (i in 0 until array.length()) {
+      val obj = array.getJSONObject(i)
+      list.add(
+        MemoryEntry(
+          id = obj.optString("id"),
+          content = obj.optString("content"),
+          timestamp = obj.optLong("timestamp")
+        )
+      )
+    }
+    return list
+  }
+
+  private fun serializeCharacters(characters: List<CharacterInventory>): JSONArray {
+    val array = JSONArray()
+    characters.forEach { char ->
+      val obj = JSONObject().apply {
+        put("id", char.id)
+        put("name", char.name)
+        put("role", char.role)
+        put("age", char.age)
+        put("physicalTraits", JSONArray(char.physicalTraits))
+        put("clothingTraits", JSONArray(char.clothingTraits))
+        put("accessories", JSONArray(char.accessories))
+        put("photos", JSONArray(char.photos))
+        put("imageUri", char.photos.firstOrNull() ?: char.imageUri ?: "")
+        put("notes", char.notes)
+        put("timestamp", char.timestamp)
+      }
+      array.put(obj)
+    }
+    return array
+  }
+
+  private fun deserializeCharacters(array: JSONArray?): List<CharacterInventory> {
+    if (array == null) return emptyList()
+    val list = mutableListOf<CharacterInventory>()
+    for (i in 0 until array.length()) {
+      val obj = array.getJSONObject(i)
+      val photosList = jsonArrayToList(obj.optJSONArray("photos"))
+      val primaryImg = obj.optString("imageUri").takeIf { it.isNotBlank() }
+      val finalPhotos = if (photosList.isEmpty() && primaryImg != null) listOf(primaryImg) else photosList
+      list.add(
+        CharacterInventory(
+          id = obj.optString("id"),
+          name = obj.optString("name"),
+          role = obj.optString("role", "Personagem"),
+          age = obj.optString("age", "Não especificada"),
+          physicalTraits = jsonArrayToList(obj.optJSONArray("physicalTraits")),
+          clothingTraits = jsonArrayToList(obj.optJSONArray("clothingTraits")),
+          accessories = jsonArrayToList(obj.optJSONArray("accessories")),
+          photos = finalPhotos,
+          imageUri = finalPhotos.firstOrNull() ?: primaryImg,
+          notes = obj.optString("notes"),
+          timestamp = obj.optLong("timestamp")
+        )
+      )
+    }
+    return list
   }
 }

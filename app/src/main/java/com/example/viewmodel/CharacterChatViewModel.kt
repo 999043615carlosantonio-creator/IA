@@ -19,10 +19,13 @@ import com.example.data.gemini.GeminiPart
 import com.example.data.gemini.GeminiRequest
 import com.example.model.CharacterInventory
 import com.example.model.ChatMessage
+import com.example.model.GameSave
 import com.example.model.MemoryEntry
+import com.example.model.SaveType
 import com.example.model.UserProfile
 import com.example.repository.CharacterMemoryRepository
 import com.example.util.ImageUtils
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -46,7 +49,12 @@ data class CharacterChatUiState(
   val isListeningVoice: Boolean = false,
   val isTtsEnabled: Boolean = true,
   val showMemorySheet: Boolean = false,
-  val showSettingsSheet: Boolean = false
+  val showSettingsSheet: Boolean = false,
+  val showSavesSheet: Boolean = false,
+  val allSaves: List<GameSave> = emptyList(),
+  val lastSavedTimestamp: Long = 0L,
+  val lastSavedTitle: String = "",
+  val isAutoSaving: Boolean = false
 )
 
 class CharacterChatViewModel(application: Application) : AndroidViewModel(application) {
@@ -63,12 +71,17 @@ class CharacterChatViewModel(application: Application) : AndroidViewModel(applic
       } else {
         listOf(makeInitialWelcomeMessage(activeProf))
       }
+      val loadedSaves = repository.getSavesForProfile(activeProf.id)
+      val latestSave = loadedSaves.firstOrNull()
       CharacterChatUiState(
         currentProfile = activeProf,
         allProfiles = allProfs,
         messages = initialMsgs,
         savedCharacters = repository.getAllCharacters(),
-        savedMemories = repository.getAllMemoryEntries()
+        savedMemories = repository.getAllMemoryEntries(),
+        allSaves = loadedSaves,
+        lastSavedTimestamp = latestSave?.timestamp ?: 0L,
+        lastSavedTitle = latestSave?.title ?: ""
       )
     }
   )
@@ -97,6 +110,224 @@ class CharacterChatViewModel(application: Application) : AndroidViewModel(applic
         )
       }
     }
+  }
+
+  init {
+    startPeriodicAutoSaveLoop()
+  }
+
+  private var lastAutoSavedTurnCount: Int = 0
+
+  private fun startPeriodicAutoSaveLoop() {
+    viewModelScope.launch {
+      while (true) {
+        delay(90_000L) // 90 segundos de intervalo
+        checkAndPerformPeriodicAutoSave()
+      }
+    }
+  }
+
+  private fun checkAndPerformPeriodicAutoSave() {
+    val state = _uiState.value
+    val userTurns = state.messages.count { it.isUser }
+    if (userTurns > lastAutoSavedTurnCount && state.messages.isNotEmpty()) {
+      performSave(
+        triggerReason = "Intervalo Automático Regular (Prevenção de Perda de Dados)",
+        saveType = SaveType.AUTO_INTERVAL,
+        customTitle = null,
+        notifyUser = false
+      )
+    }
+  }
+
+  fun setSavesSheetVisibility(show: Boolean) {
+    val saves = repository.getSavesForProfile(_uiState.value.currentProfile.id)
+    _uiState.update {
+      it.copy(
+        showSavesSheet = show,
+        allSaves = saves
+      )
+    }
+  }
+
+  fun createManualSave(customTitle: String? = null) {
+    performSave(
+      triggerReason = "Checkpoint Manual Criado pelo Jogador",
+      saveType = SaveType.MANUAL,
+      customTitle = customTitle ?: "Ponto Manual (Aventura)",
+      notifyUser = true
+    )
+  }
+
+  fun loadGameSave(save: GameSave) {
+    val profileId = save.profileId
+
+    val restoreNotice = ChatMessage(
+      text = "⏳ **Ponto da Aventura Restaurado!**\n\n" +
+        "• **Ponto Selecionado:** \"${save.title}\"\n" +
+        "• **Tipo de Salvamento:** ${when (save.saveType) {
+          SaveType.AUTO_KEY_MOMENT -> "Salvamento Automático (Momento-Chave)"
+          SaveType.AUTO_INTERVAL -> "Salvamento Automático (Intervalo Regular)"
+          SaveType.MANUAL -> "Checkpoint Manual do Jogador"
+        }}\n" +
+        "• **Motivo do Save:** ${save.triggerReason}\n" +
+        "• **Turnos Gravados:** ${save.turnCount} ações do jogador\n\n" +
+        "Seu histórico de decisões, inventário de personagens e anotações foram restabelecidos com exatidão a partir deste momento.",
+      isUser = false
+    )
+
+    val restoredMessages = save.messagesSnapshot + restoreNotice
+    repository.saveChatMessagesForProfile(profileId, restoredMessages)
+
+    _uiState.update {
+      it.copy(
+        messages = restoredMessages,
+        savedCharacters = if (save.charactersSnapshot.isNotEmpty()) save.charactersSnapshot else it.savedCharacters,
+        savedMemories = if (save.memoriesSnapshot.isNotEmpty()) save.memoriesSnapshot else it.savedMemories,
+        showSavesSheet = false,
+        lastSavedTimestamp = System.currentTimeMillis(),
+        lastSavedTitle = "Restaurado: ${save.title}"
+      )
+    }
+
+    viewModelScope.launch {
+      _toastEvent.emit("Ponto carregado: ${save.title}")
+      if (_uiState.value.isTtsEnabled) {
+        _ttsSpeakEvent.emit("Ponto da aventura restaurado. Retornando a: ${save.title}")
+      }
+    }
+  }
+
+  fun deleteGameSave(saveId: String) {
+    val profileId = _uiState.value.currentProfile.id
+    val removed = repository.deleteGameSave(profileId, saveId)
+    if (removed) {
+      val updated = repository.getSavesForProfile(profileId)
+      _uiState.update { it.copy(allSaves = updated) }
+      viewModelScope.launch {
+        _toastEvent.emit("Ponto salvo removido.")
+      }
+    }
+  }
+
+  fun performSave(
+    triggerReason: String,
+    saveType: SaveType,
+    customTitle: String? = null,
+    notifyUser: Boolean = false
+  ): GameSave {
+    val state = _uiState.value
+    val userTurnCount = state.messages.count { it.isUser }
+    val lastUserMessage = state.messages.lastOrNull { it.isUser }?.text ?: ""
+    val snippet = if (lastUserMessage.length > 55) lastUserMessage.take(52) + "..." else lastUserMessage
+
+    val title = customTitle ?: when (saveType) {
+      SaveType.AUTO_KEY_MOMENT -> {
+        val lower = lastUserMessage.lowercase()
+        when {
+          lower.contains("nurague") -> "Auto-Save: Batalha no Nurague"
+          lower.contains("ferusaval") -> "Auto-Save: Emboscada em Ferusaval"
+          lower.contains("teravarn") -> "Auto-Save: Revelação de Teravarn"
+          lower.contains("derek") -> "Auto-Save: Jornada de Derek"
+          lower.contains("kaelis") -> "Auto-Save: Proteção de Kaelis"
+          lower.contains("carlos") -> "Auto-Save: Fuga dos Desertores"
+          lower.contains("zalor") -> "Auto-Save: Refúgio no Porto"
+          lower.contains("lyra") -> "Auto-Save: Encontro com Lyra"
+          lower.contains("maycon") || lower.contains("draxos") -> "Auto-Save: Ameaça Canibal"
+          lower.contains("capítulo") || lower.contains("capitulo") -> "Auto-Save: Avanço de Capítulo"
+          else -> "Auto-Save: Momento-Chave (Turno $userTurnCount)"
+        }
+      }
+      SaveType.AUTO_INTERVAL -> "Auto-Save Periódico (Turno $userTurnCount)"
+      SaveType.MANUAL -> "Checkpoint Manual (Turno $userTurnCount)"
+    }
+
+    val save = GameSave(
+      id = "save_${state.currentProfile.id}_${System.currentTimeMillis()}",
+      profileId = state.currentProfile.id,
+      title = title,
+      timestamp = System.currentTimeMillis(),
+      saveType = saveType,
+      triggerReason = triggerReason,
+      turnCount = userTurnCount,
+      lastActionSnippet = snippet,
+      storyTitle = state.currentProfile.storyTitle,
+      messagesSnapshot = state.messages,
+      memoriesSnapshot = repository.getAllMemoryEntries(),
+      charactersSnapshot = repository.getAllCharacters()
+    )
+
+    repository.saveGame(save)
+    lastAutoSavedTurnCount = userTurnCount
+
+    val updatedSaves = repository.getSavesForProfile(state.currentProfile.id)
+    _uiState.update {
+      it.copy(
+        allSaves = updatedSaves,
+        lastSavedTimestamp = save.timestamp,
+        lastSavedTitle = save.title,
+        isAutoSaving = true
+      )
+    }
+
+    viewModelScope.launch {
+      delay(1200L)
+      _uiState.update { it.copy(isAutoSaving = false) }
+    }
+
+    if (notifyUser) {
+      viewModelScope.launch {
+        _toastEvent.emit("💾 Ponto de jogo salvo: $title")
+      }
+    }
+
+    return save
+  }
+
+  private fun isKeyStoryMoment(userText: String, replyText: String): Pair<Boolean, String> {
+    val lowerUser = userText.lowercase()
+    val lowerReply = replyText.lowercase()
+
+    // 1. Decisão ou Escolha Narrativa do Jogador
+    if (lowerUser.contains("escolho") || lowerUser.contains("decido") || lowerUser.contains("minha escolha") ||
+      lowerUser.contains("vou fugir") || lowerUser.contains("vou lutar") || lowerUser.contains("atacar") ||
+      lowerUser.contains("investigar") || lowerUser.contains("proteger") || lowerUser.contains("desobedecer") ||
+      lowerUser.contains("interrogar") || lowerUser.contains("embarcar") || lowerUser.contains("enfrentar")) {
+      return true to "Decisão do Jogador: Escolha Narrativa"
+    }
+
+    // 2. Confrontos e Batalhas Canônicas
+    if (lowerUser.contains("nurague") || lowerUser.contains("ferusaval") || lowerUser.contains("emboscada") ||
+      lowerUser.contains("draxos") || lowerUser.contains("maycon") || lowerUser.contains("marcos") ||
+      lowerUser.contains("espada esmeralda") || lowerUser.contains("selvagens") || lowerUser.contains("bimor")) {
+      return true to "Momento-Chave: Batalha / Confronto Canônico"
+    }
+
+    // 3. Revelações e Lore Ancestral
+    if (lowerUser.contains("teravarn") || lowerUser.contains("sangue de kaelis") || lowerUser.contains("pacto") ||
+      lowerUser.contains("monstros marinhos") || lowerUser.contains("origem de derek") || lowerUser.contains("valdarion") ||
+      lowerUser.contains("el inferno") || lowerUser.contains("esposa de carlos")) {
+      return true to "Momento-Chave: Revelação de Lore"
+    }
+
+    // 4. Capítulos da Saga
+    for (i in 1..7) {
+      if (lowerUser.contains("capítulo $i") || lowerUser.contains("capitulo $i")) {
+        return true to "Momento-Chave: Capítulo $i da Saga"
+      }
+    }
+
+    // 5. Novo personagem ou inventário
+    if (lowerUser.contains("novo personagem") || lowerUser.contains("catalogar") || lowerUser.contains("inventário")) {
+      return true to "Inventário / Personagem Atualizado"
+    }
+
+    // 6. Resposta narrativa longa e substancial
+    if (replyText.length > 300 && (lowerReply.contains("capítulo") || lowerReply.contains("derek") || lowerReply.contains("kallan") || lowerReply.contains("nurague"))) {
+      return true to "Avanço Narrativo Canônico"
+    }
+
+    return false to ""
   }
 
   fun toggleTts() {
@@ -134,6 +365,11 @@ class CharacterChatViewModel(application: Application) : AndroidViewModel(applic
       _uiState.update {
         it.copy(savedMemories = repository.getAllMemoryEntries())
       }
+      performSave(
+        triggerReason = "Nova Informação Específica Gravada na Memória",
+        saveType = SaveType.AUTO_KEY_MOMENT,
+        customTitle = "Auto-Save: Memória Registrada"
+      )
       _toastEvent.emit("Informação guardada na memória do aparelho com sucesso!")
     }
   }
@@ -158,17 +394,28 @@ class CharacterChatViewModel(application: Application) : AndroidViewModel(applic
   }
 
   fun switchProfile(profileId: String) {
+    if (_uiState.value.messages.isNotEmpty()) {
+      performSave(
+        triggerReason = "Salvamento Automático ao Trocar de Perfil",
+        saveType = SaveType.AUTO_KEY_MOMENT
+      )
+    }
     repository.saveChatMessagesForProfile(_uiState.value.currentProfile.id, _uiState.value.messages)
     repository.setActiveProfileId(profileId)
     val newProfile = repository.getActiveProfile()
     val allProfiles = repository.getAllProfiles()
     val loaded = repository.getChatMessagesForProfile(newProfile.id)
     val msgs = if (loaded.isNotEmpty()) loaded else listOf(makeInitialWelcomeMessage(newProfile))
+    val saves = repository.getSavesForProfile(newProfile.id)
+    val latestSave = saves.firstOrNull()
     _uiState.update {
       it.copy(
         currentProfile = newProfile,
         allProfiles = allProfiles,
         messages = msgs,
+        allSaves = saves,
+        lastSavedTimestamp = latestSave?.timestamp ?: 0L,
+        lastSavedTitle = latestSave?.title ?: "",
         showProfileSheet = false
       )
     }
@@ -336,6 +583,11 @@ class CharacterChatViewModel(application: Application) : AndroidViewModel(applic
             )
           }
           repository.saveChatMessagesForProfile(updatedProfile.id, finalList)
+          performSave(
+            triggerReason = "Nova História Canônica Registrada no Perfil",
+            saveType = SaveType.AUTO_KEY_MOMENT,
+            customTitle = "Auto-Save: Início de \"${updatedProfile.storyTitle}\""
+          )
           if (_uiState.value.isTtsEnabled) {
             _ttsSpeakEvent.emit(reply.text)
           }
@@ -399,6 +651,12 @@ class CharacterChatViewModel(application: Application) : AndroidViewModel(applic
             )
           }
 
+          performSave(
+            triggerReason = "Nova Informação Gravada na Memória",
+            saveType = SaveType.AUTO_KEY_MOMENT,
+            customTitle = "Auto-Save: Memória Registrada"
+          )
+
           ChatMessage(
             text = "💾 **Informação Guardada com Sucesso na Memória Permanente do Aparelho!**\n\n" +
               "\"$memoryContent\"\n\n" +
@@ -406,6 +664,32 @@ class CharacterChatViewModel(application: Application) : AndroidViewModel(applic
               "Você pode visualizar ou gerenciar suas anotações no botão de Configurações / Memória.",
             isUser = false,
             suggestAccessMemoryButton = true
+          )
+        }
+
+        lower.contains("salvar jogo") || lower.contains("salve o jogo") || lower.contains("save game") ||
+        lower.contains("criar checkpoint") || lower.contains("salvar progresso") -> {
+          val save = performSave(
+            triggerReason = "Checkpoint Criado pelo Jogador",
+            saveType = SaveType.MANUAL,
+            customTitle = "Ponto Manual (Aventura)",
+            notifyUser = true
+          )
+          ChatMessage(
+            text = "💾 **Ponto de Jogo Salvo com Sucesso!**\n\n" +
+              "• **Identificador:** \"${save.title}\"\n" +
+              "• **Momento:** Gravado com ${save.turnCount} ações, inventário de personagens e história intactos.\n\n" +
+              "Você pode visualizar, restaurar ou gerenciar seus saves a qualquer momento tocando no botão de **Saves / Checkpoints** no topo da tela.",
+            isUser = false
+          )
+        }
+
+        lower.contains("carregar jogo") || lower.contains("load game") || lower.contains("restaurar progresso") ||
+        lower.contains("meus saves") || lower.contains("ver saves") || lower.contains("abrir saves") -> {
+          setSavesSheetVisibility(true)
+          ChatMessage(
+            text = "📜 **Central de Saves da Aventura**\n\nAbri o painel de pontos salvos para você. Nele você pode ver todos os auto-saves registrados nos momentos-chave da narrativa e restaurar qualquer ponto anterior quando desejar!",
+            isUser = false
           )
         }
 
@@ -480,7 +764,7 @@ class CharacterChatViewModel(application: Application) : AndroidViewModel(applic
         }
         lower.contains("ajuda") || lower.contains("como funciona") -> {
           ChatMessage(
-            text = "Como usar:\n1. Pergunte sobre a história, personagens (Derek, Teravarn, Kallan, Kaelis, Lyra, Carlos) ou capítulos de \"A Ordem dos Sem Olhos\".\n2. Para guardar algo na memória do aparelho, use: \"GUARDE EM SUA MEMORIA ESSA INFORMAÇÃO ESPECÍFICA: [seu texto]\".\n3. Para abrir a memória a qualquer instante, use: \"ACESSAR MEMÓRIA\" ou toque no botão de configurações no topo.\n4. Envie imagens para analisar traços visuais com Gemini ou use o microfone para falar!",
+            text = "Como usar:\n1. Pergunte sobre a história, personagens (Derek, Teravarn, Kallan, Kaelis, Lyra, Carlos) ou capítulos de \"A Ordem dos Sem Olhos\".\n2. Para guardar algo na memória do aparelho, use: \"GUARDE EM SUA MEMORIA ESSA INFORMAÇÃO ESPECÍFICA: [seu texto]\".\n3. Para abrir a memória a qualquer instante, use: \"ACESSAR MEMÓRIA\" ou toque no botão de configurações no topo.\n4. Para salvar ou carregar pontos da aventura, diga \"Salvar jogo\" ou \"Carregar jogo\" ou toque no ícone de Saves.\n5. O jogo salva seu progresso automaticamente em momentos-chave e intervalos regulares para evitar qualquer perda de dados!",
             isUser = false
           )
         }
@@ -497,6 +781,17 @@ class CharacterChatViewModel(application: Application) : AndroidViewModel(applic
       val finalMessages = _uiState.value.messages + replyMessage
       _uiState.update { it.copy(messages = finalMessages) }
       repository.saveChatMessagesForProfile(_uiState.value.currentProfile.id, finalMessages)
+
+      // Auto-Save automático em momentos-chave da aventura para prevenir perda de dados
+      val (isKeyMoment, reason) = isKeyStoryMoment(clean, replyMessage.text)
+      if (isKeyMoment) {
+        performSave(
+          triggerReason = reason,
+          saveType = SaveType.AUTO_KEY_MOMENT,
+          customTitle = null,
+          notifyUser = false
+        )
+      }
       if (_uiState.value.isTtsEnabled) {
         val spoken = replyMessage.generatedPrompt?.let {
           "Prompt gerado com base no inventário visual. Pronto para cópia."
@@ -611,8 +906,6 @@ class CharacterChatViewModel(application: Application) : AndroidViewModel(applic
     }
 
     // Se NÃO tiver história personalizada, continua como especialista no livro "A Ordem dos Sem Olhos"
-    val qLower = query.lowercase()
-
     // Respostas canônicas imediatas para perguntas diretas mais frequentes
     if (qLower.contains("derek") && (qLower.contains("quem") || qLower.contains("luta") || qLower.contains("lutou") || qLower.contains("idade") || qLower.contains("pai") || qLower.contains("origem"))) {
       val derekChar = repository.getAllCharacters().firstOrNull { it.name.equals("Derek", ignoreCase = true) }
@@ -773,6 +1066,13 @@ class CharacterChatViewModel(application: Application) : AndroidViewModel(applic
           isAnalyzingImage = false
         )
       }
+
+      repository.saveChatMessagesForProfile(_uiState.value.currentProfile.id, _uiState.value.messages)
+      performSave(
+        triggerReason = "Novo Personagem Visual Catalogado no Inventário",
+        saveType = SaveType.AUTO_KEY_MOMENT,
+        customTitle = "Auto-Save: ${analyzedInventory.name}"
+      )
 
       if (_uiState.value.isTtsEnabled) {
         _ttsSpeakEvent.emit("Análise visual concluída pelo Gemini. O inventário do personagem foi salvo na memória interna e o prompt está pronto para cópia.")

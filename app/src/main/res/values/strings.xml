@@ -27,8 +27,19 @@
     <string name="profile_title">Perfis de História</string>
     <string name="switch_profile">Trocar Perfil</string>
     <string name="new_profile">Criar Novo Perfil</string>
+    <string name="create_new_profile">Criar Novo Perfil</string>
+    <string name="dialog_new_profile_title">Novo Perfil de História</string>
     <string name="enter_profile_name">Nome do novo perfil</string>
     <string name="profile_options">Opções de Perfil</string>
     <string name="profile_active">Ativo</string>
     <string name="delete_profile">Excluir Perfil</string>
+    <string name="save_system_title">Saves da Aventura</string>
+    <string name="save_system_subtitle">Salvamento automático ativo em momentos-chave e intervalos regulares</string>
+    <string name="save_game_action">Salvar Ponto Manual</string>
+    <string name="load_game_action">Restaurar Ponto</string>
+    <string name="auto_save_badge_key">Momento-Chave</string>
+    <string name="auto_save_badge_interval">Auto-Save Regular</string>
+    <string name="auto_save_badge_manual">Checkpoint Manual</string>
+    <string name="no_saves_yet">Nenhum ponto salvo ainda nesta aventura.</string>
+    <string name="confirm_load_save">Deseja restaurar este ponto salvo?</string>
 </resources>

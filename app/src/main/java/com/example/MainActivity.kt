@@ -55,16 +55,22 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.automirrored.filled.ViewList
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.FolderShared
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
@@ -73,6 +79,9 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Storage
+import androidx.compose.material.icons.filled.Timer
+import com.example.model.GameSave
+import com.example.model.SaveType
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -336,6 +345,26 @@ fun CharacterAIChatScreen(
             )
           }
           IconButton(
+            onClick = { viewModel.setSavesSheetVisibility(true) },
+            modifier = Modifier.testTag("btn_save_system")
+          ) {
+            Box {
+              Icon(
+                imageVector = Icons.Default.Bookmark,
+                contentDescription = stringResource(R.string.save_system_title),
+                tint = MaterialTheme.colorScheme.primary
+              )
+              if (uiState.isAutoSaving) {
+                Box(
+                  modifier = Modifier
+                    .size(8.dp)
+                    .background(MaterialTheme.colorScheme.error, CircleShape)
+                    .align(Alignment.TopEnd)
+                )
+              }
+            }
+          }
+          IconButton(
             onClick = { viewModel.setSettingsSheetVisibility(true) },
             modifier = Modifier.testTag("btn_open_settings")
           ) {
@@ -467,6 +496,61 @@ fun CharacterAIChatScreen(
               fontWeight = FontWeight.Medium
             )
           }
+        }
+      }
+      // Barra de Status do Sistema de Save Automático (Prevenção de Perda de Dados)
+      Surface(
+        color = MaterialTheme.colorScheme.surface,
+        modifier = Modifier
+          .fillMaxWidth()
+          .clickable { viewModel.setSavesSheetVisibility(true) }
+          .testTag("btn_open_saves_bar")
+      ) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 5.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.weight(1f)
+          ) {
+            Box(
+              modifier = Modifier
+                .size(7.dp)
+                .background(
+                  if (uiState.isAutoSaving) MaterialTheme.colorScheme.primary
+                  else MaterialTheme.colorScheme.secondary,
+                  CircleShape
+                )
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+              text = if (uiState.isAutoSaving) {
+                "💾 Salvando progresso automaticamente..."
+              } else if (uiState.lastSavedTimestamp > 0) {
+                val timeStr = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault())
+                  .format(java.util.Date(uiState.lastSavedTimestamp))
+                "💾 Salvo às $timeStr • ${uiState.lastSavedTitle.take(30)}"
+              } else {
+                "💾 Auto-save ativo (a cada 90s e em momentos-chave)"
+              },
+              fontSize = 11.sp,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
+            )
+          }
+
+          Text(
+            text = "Saves (${uiState.allSaves.size})",
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(start = 6.dp)
+          )
         }
       }
       // Chat History
@@ -684,6 +768,23 @@ fun CharacterAIChatScreen(
             viewModel.deleteProfile(profileId)
           },
           onClose = { viewModel.setProfileSheetVisibility(false) }
+        )
+      }
+    }
+
+    // Modal Sheet for Save Game System (Text Adventure Checkpoints & Auto-Saves)
+    if (uiState.showSavesSheet) {
+      ModalBottomSheet(
+        onDismissRequest = { viewModel.setSavesSheetVisibility(false) },
+        sheetState = rememberModalBottomSheetState()
+      ) {
+        SaveGameSheetContent(
+          saves = uiState.allSaves,
+          currentProfile = uiState.currentProfile,
+          onCreateManualSave = { viewModel.createManualSave() },
+          onLoadSave = { save -> viewModel.loadGameSave(save) },
+          onDeleteSave = { saveId -> viewModel.deleteGameSave(saveId) },
+          onClose = { viewModel.setSavesSheetVisibility(false) }
         )
       }
     }
@@ -2170,6 +2271,387 @@ fun ProfileOptionsSheetContent(
     )
   }
 }
+
+@Composable
+fun SaveGameSheetContent(
+  saves: List<GameSave>,
+  currentProfile: UserProfile,
+  onCreateManualSave: () -> Unit,
+  onLoadSave: (GameSave) -> Unit,
+  onDeleteSave: (String) -> Unit,
+  onClose: () -> Unit
+) {
+  var saveToLoadConfirm by remember { mutableStateOf<GameSave?>(null) }
+  var saveToDeleteConfirm by remember { mutableStateOf<GameSave?>(null) }
+
+  Column(
+    modifier = Modifier
+      .fillMaxWidth()
+      .padding(horizontal = 20.dp, vertical = 10.dp)
+      .navigationBarsPadding()
+  ) {
+    // Header
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+      Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+          imageVector = Icons.Default.Bookmark,
+          contentDescription = null,
+          tint = MaterialTheme.colorScheme.primary,
+          modifier = Modifier.size(28.dp)
+        )
+        Spacer(modifier = Modifier.width(10.dp))
+        Column {
+          Text(
+            text = stringResource(R.string.save_system_title),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold
+          )
+          Text(
+            text = "Perfil: ${currentProfile.name} • ${currentProfile.storyTitle}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+          )
+        }
+      }
+      IconButton(onClick = onClose) {
+        Icon(imageVector = Icons.Default.Close, contentDescription = "Fechar")
+      }
+    }
+
+    Spacer(modifier = Modifier.height(10.dp))
+
+    // Card informativo sobre salvamento automático
+    Card(
+      shape = RoundedCornerShape(12.dp),
+      colors = CardDefaults.cardColors(
+        containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f)
+      ),
+      modifier = Modifier.fillMaxWidth()
+    ) {
+      Row(
+        modifier = Modifier.padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Icon(
+          imageVector = Icons.Default.AutoAwesome,
+          contentDescription = null,
+          tint = MaterialTheme.colorScheme.secondary,
+          modifier = Modifier.size(22.dp)
+        )
+        Spacer(modifier = Modifier.width(10.dp))
+        Column {
+          Text(
+            text = "Salvamento Automático Ativo",
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.onSecondaryContainer
+          )
+          Text(
+            text = "O jogo salva automaticamente seu progresso em momentos-chave da história (confrontos, decisões, revelações) e a cada 90s para evitar qualquer perda.",
+            style = MaterialTheme.typography.bodySmall,
+            fontSize = 11.5.sp,
+            color = MaterialTheme.colorScheme.onSecondaryContainer
+          )
+        }
+      }
+    }
+
+    Spacer(modifier = Modifier.height(12.dp))
+
+    // Botão para criar save manual
+    Button(
+      onClick = onCreateManualSave,
+      modifier = Modifier
+        .fillMaxWidth()
+        .testTag("btn_create_manual_save"),
+      colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+    ) {
+      Icon(imageVector = Icons.Default.BookmarkAdd, contentDescription = null, modifier = Modifier.size(18.dp))
+      Spacer(modifier = Modifier.width(8.dp))
+      Text("Criar Ponto de Restauração Manual", fontWeight = FontWeight.SemiBold)
+    }
+
+    Spacer(modifier = Modifier.height(14.dp))
+
+    // Lista de Saves
+    Text(
+      text = "Pontos Gravados (${saves.size})",
+      style = MaterialTheme.typography.labelLarge,
+      fontWeight = FontWeight.Bold,
+      color = MaterialTheme.colorScheme.onSurface
+    )
+
+    Spacer(modifier = Modifier.height(8.dp))
+
+    if (saves.isEmpty()) {
+      Box(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(vertical = 32.dp),
+        contentAlignment = Alignment.Center
+      ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+          Icon(
+            imageVector = Icons.Default.History,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.outline,
+            modifier = Modifier.size(48.dp)
+          )
+          Spacer(modifier = Modifier.height(8.dp))
+          Text(
+            text = stringResource(R.string.no_saves_yet),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+          )
+          Text(
+            text = "Converse na aventura ou toque acima para criar um ponto manual.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.outline
+          )
+        }
+      }
+    } else {
+      LazyColumn(
+        modifier = Modifier
+          .fillMaxWidth()
+          .heightIn(max = 420.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        items(saves, key = { it.id }) { save ->
+          SaveSlotCard(
+            save = save,
+            onLoad = { saveToLoadConfirm = save },
+            onDelete = { saveToDeleteConfirm = save }
+          )
+        }
+      }
+    }
+
+    Spacer(modifier = Modifier.height(16.dp))
+  }
+
+  // Dialog de confirmação para carregar o save
+  saveToLoadConfirm?.let { save ->
+    AlertDialog(
+      onDismissRequest = { saveToLoadConfirm = null },
+      title = { Text("Restaurar Ponto Salvo?") },
+      text = {
+        Text("Deseja retornar ao ponto \"${save.title}\"? O histórico de conversa será restaurado para como estava naquele momento (${save.turnCount} turnos).")
+      },
+      confirmButton = {
+        Button(
+          onClick = {
+            onLoadSave(save)
+            saveToLoadConfirm = null
+          },
+          modifier = Modifier.testTag("btn_confirm_load_save")
+        ) {
+          Text("Restaurar")
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { saveToLoadConfirm = null }) {
+          Text("Cancelar")
+        }
+      }
+    )
+  }
+
+  // Dialog de confirmação para excluir o save
+  saveToDeleteConfirm?.let { save ->
+    AlertDialog(
+      onDismissRequest = { saveToDeleteConfirm = null },
+      title = { Text("Excluir Ponto Salvo?") },
+      text = {
+        Text("Tem certeza que deseja apagar o registro \"${save.title}\"?")
+      },
+      confirmButton = {
+        Button(
+          onClick = {
+            onDeleteSave(save.id)
+            saveToDeleteConfirm = null
+          },
+          colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+        ) {
+          Text("Excluir")
+        }
+      },
+      dismissButton = {
+        TextButton(onClick = { saveToDeleteConfirm = null }) {
+          Text("Cancelar")
+        }
+      }
+    )
+  }
+}
+
+@Composable
+fun SaveSlotCard(
+  save: GameSave,
+  onLoad: () -> Unit,
+  onDelete: () -> Unit
+) {
+  val (badgeText, badgeBg, badgeTextColor, badgeIcon) = when (save.saveType) {
+    SaveType.AUTO_KEY_MOMENT -> Quadruple(
+      "Momento-Chave",
+      MaterialTheme.colorScheme.tertiaryContainer,
+      MaterialTheme.colorScheme.onTertiaryContainer,
+      Icons.Default.FlashOn
+    )
+    SaveType.AUTO_INTERVAL -> Quadruple(
+      "Intervalo 90s",
+      MaterialTheme.colorScheme.secondaryContainer,
+      MaterialTheme.colorScheme.onSecondaryContainer,
+      Icons.Default.Timer
+    )
+    SaveType.MANUAL -> Quadruple(
+      "Manual",
+      MaterialTheme.colorScheme.primaryContainer,
+      MaterialTheme.colorScheme.onPrimaryContainer,
+      Icons.Default.Bookmark
+    )
+  }
+
+  val dateStr = remember(save.timestamp) {
+    val sdf = java.text.SimpleDateFormat("dd/MM/yy 'às' HH:mm:ss", java.util.Locale.getDefault())
+    sdf.format(java.util.Date(save.timestamp))
+  }
+
+  Card(
+    shape = RoundedCornerShape(12.dp),
+    colors = CardDefaults.cardColors(
+      containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f)
+    ),
+    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)),
+    modifier = Modifier
+      .fillMaxWidth()
+      .testTag("save_card_${save.id}")
+  ) {
+    Column(modifier = Modifier.padding(12.dp)) {
+      // Header com Badge e Horário
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+      ) {
+        Surface(
+          shape = RoundedCornerShape(6.dp),
+          color = badgeBg
+        ) {
+          Row(
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Icon(imageVector = badgeIcon, contentDescription = null, tint = badgeTextColor, modifier = Modifier.size(12.dp))
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(text = badgeText, fontSize = 10.sp, fontWeight = FontWeight.Bold, color = badgeTextColor)
+          }
+        }
+
+        Text(
+          text = dateStr,
+          fontSize = 11.sp,
+          color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+      }
+
+      Spacer(modifier = Modifier.height(6.dp))
+
+      Text(
+        text = save.title,
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.Bold,
+        color = MaterialTheme.colorScheme.onSurface
+      )
+
+      Text(
+        text = "Motivo: ${save.triggerReason}",
+        style = MaterialTheme.typography.bodySmall,
+        fontSize = 11.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+      )
+
+      if (save.lastActionSnippet.isNotBlank()) {
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+          text = "💬 \"${save.lastActionSnippet}\"",
+          style = MaterialTheme.typography.bodySmall,
+          fontSize = 11.sp,
+          color = MaterialTheme.colorScheme.primary,
+          maxLines = 2,
+          overflow = TextOverflow.Ellipsis
+        )
+      }
+
+      Spacer(modifier = Modifier.height(6.dp))
+
+      // Informações de snapshot
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+      ) {
+        Text(
+          text = "🎮 ${save.turnCount} turnos",
+          fontSize = 10.5.sp,
+          color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+          text = "✉️ ${save.messagesSnapshot.size} msgs",
+          fontSize = 10.5.sp,
+          color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        if (save.charactersSnapshot.isNotEmpty()) {
+          Text(
+            text = "👥 ${save.charactersSnapshot.size} personagens",
+            fontSize = 10.5.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+          )
+        }
+      }
+
+      Spacer(modifier = Modifier.height(10.dp))
+
+      // Ações do card
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+      ) {
+        Button(
+          onClick = onLoad,
+          contentPadding = PaddingValues(horizontal = 14.dp, vertical = 4.dp),
+          modifier = Modifier
+            .height(34.dp)
+            .testTag("btn_restore_save_${save.id}")
+        ) {
+          Icon(imageVector = Icons.Default.History, contentDescription = null, modifier = Modifier.size(16.dp))
+          Spacer(modifier = Modifier.width(6.dp))
+          Text("Restaurar Ponto", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        }
+
+        IconButton(
+          onClick = onDelete,
+          modifier = Modifier
+            .size(34.dp)
+            .testTag("btn_delete_save_${save.id}")
+        ) {
+          Icon(
+            imageVector = Icons.Default.Delete,
+            contentDescription = "Excluir Save",
+            tint = MaterialTheme.colorScheme.error.copy(alpha = 0.8f),
+            modifier = Modifier.size(18.dp)
+          )
+        }
+      }
+    }
+  }
+}
+
+data class Quadruple<A, B, C, D>(val first: A, val second: B, val third: C, val fourth: D)
 
 @Composable
 fun Greeting(name: String, modifier: Modifier = Modifier) {
